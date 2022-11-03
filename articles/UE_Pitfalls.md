@@ -4,7 +4,11 @@ Here is a collection of random pitfalls (~~they are feature not bugs~~) I've enc
 
 //TOC here
 
-#### ApplyWorldOffset
+#### On DDC cache /UE4.27
+
+UE uses DDC to cache cooked data and facilitates user operations. 
+
+#### ApplyWorldOffset /UE4.27
 
 If we have several levels with offset in a game, after unloading and reloading levels you may find some level components not set up properly.
 
