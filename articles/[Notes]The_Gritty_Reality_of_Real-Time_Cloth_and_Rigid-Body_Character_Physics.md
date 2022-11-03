@@ -120,3 +120,9 @@ Note: self collision is expenseive!
 
 ![image-20221103222213904](C:\Users\Wenxian\Desktop\workspace\GameDevGems\articles\[Notes]The_Gritty_Reality_of_Real-Time_Cloth_and_Rigid-Body_Character_Physics.assets\image-20221103222213904.png)
 
+
+
+### Learning resources
+
+https://dev.epicgames.com/community/learning/paths/QX/unreal-engine-welcome-to-chaos-character-physics
+
