@@ -6,98 +6,40 @@ Here is a collection of random pitfalls (~~they are feature not bugs~~) I've enc
 
 #### On DDC cache /UE4.27
 
-UE uses DDC to cache cooked data and facilitates user operations. 
+UE uses DDC to cache cooked data and facilitates user operations. See [Derived Data Cache](https://docs.unrealengine.com/4.26/en-US/ProductionPipelines/DerivedDataCache/). A caveat here is **anyone** is able to create and upload DDC data (in case of a shared, e.g., networked, DDC).
 
-#### ApplyWorldOffset /UE4.27
-
-If we have several levels with offset in a game, after unloading and reloading levels you may find some level components not set up properly.
+Take physics mesh for example. Collision data is loaded in `getPhysicsTriMeshData`. This process includes trying to retrieve DDC cooked data in `GetDDCBuiltData` based on a cache key:
 
 ```c++
-void USceneComponent::ApplyWorldOffset(const FVector& InOffset, bool bWorldShift)
-{
-	Super::ApplyWorldOffset(InOffset, bWorldShift);
-	
-	// Calculate current ComponentToWorld transform
-	// We do this because at level load/duplication ComponentToWorld is uninitialized
+	/** 
+	 * Static function to build a cache key out of the plugin name, versions and plugin specific info
+	 * @param PluginName						Name of the derived data type
+	 * @param VersionString						Version string of the derived data
+	 * @param PluginSpecificCacheKeySuffix		GUIDS and / or Hashes, etc to uniquely identify the specific cache entry
+	 * @return									Assembled cache key
+	**/
+	static FString BuildCacheKey(const TCHAR* PluginName, const TCHAR* VersionString, const TCHAR* PluginSpecificCacheKeySuffix)
 	{
-		ComponentToWorld = CalcNewComponentToWorld(GetRelativeTransform());
+		return BuildCacheKey(FStringView(PluginName), FStringView(VersionString), FStringView(PluginSpecificCacheKeySuffix));
 	}
-
-	// Update bounds
-	Bounds.Origin+= InOffset;
-
-	// Update component location
-	if (GetAttachParent() == nullptr || IsUsingAbsoluteLocation())
-	{
-		SetRelativeLocation_Direct(GetComponentLocation() + InOffset);
-		
-		// Calculate the new ComponentToWorld transform
-		ComponentToWorld = CalcNewComponentToWorld(GetRelativeTransform());
-	}
-
-	// Physics move is skipped if physics state is not created or physics scene supports origin shifting
-	// We still need to send transform to physics scene to "transform back" actors which should ignore origin shifting
-	// (such actors receive Zero offset)
-	const bool bSkipPhysicsTransform = (!bPhysicsStateCreated || (bWorldShift && FPhysScene::SupportsOriginShifting() && !InOffset.IsZero()));
-	OnUpdateTransform(SkipPhysicsToEnum(bSkipPhysicsTransform));
-	
-	// We still need to send transform to RT to "transform back" primitives which should ignore origin shifting
-	// (such primitives receive Zero offset)
-	if (!bWorldShift || InOffset.IsZero())
-	{
-		MarkRenderTransformDirty();
-	}
-
-	// Update physics volume if desired	
-	if (bShouldUpdatePhysicsVolume && !bWorldShift)
-	{
-		UpdatePhysicsVolume(true);
-	}
-
-	// Update children
-	for (USceneComponent* ChildComp : GetAttachChildren())
-	{
-		if(ChildComp != nullptr)
-		{
-			ChildComp->ApplyWorldOffset(InOffset, bWorldShift);
-		}
-	}
-}
 ```
 
-How unload works is the actor to be unloaded traversing through inheritance tree and executing `ApplyWorldOverset ` (as seen in `	// Update children` above). This happens recursively, and all children components may have spatial data offset by `InOffset` (in their `ApplyWorldOffset`).
-
-This causes problem on load. The root component still calls `ApplyWorldOffset` on children components; however, by the time this gets called, children components are not initialized yet (`ChildComp` is `nullptr`), hence spatial data offset by `InOffset` in unloading process may not get compensated, resulting weirdly shifted components.
-
-How UE internally solved this problem is in each components' `OnRegister`, spatially offset data are recalculated. Take `UCableComponent` for example:
+Different types of data have different ways of creating their cache keys. For triangle-face based physics collision, mesh info is encoded into the DDC cache key:
 
 ```c++
-void UCableComponent::OnRegister()
-{
-	Super::OnRegister();
-
-	const int32 NumParticles = NumSegments+1;
-
-	Particles.Reset();
-	Particles.AddUninitialized(NumParticles);
-
-	FVector CableStart, CableEnd;
-	GetEndPositions(CableStart, CableEnd);
-
-	const FVector Delta = CableEnd - CableStart;
-
-	for(int32 ParticleIdx=0; ParticleIdx<NumParticles; ParticleIdx++)
+	IInterface_CollisionDataProvider* CDP = Cast<IInterface_CollisionDataProvider>(GetOuter());
+	if(CDP)
 	{
-		FCableParticle& Particle = Particles[ParticleIdx];
-
-		const float Alpha = (float)ParticleIdx/(float)NumSegments;
-		const FVector InitialPosition = CableStart + (Alpha * Delta);
-
-		Particle.Position = InitialPosition;
-		Particle.OldPosition = InitialPosition;
-		Particle.bFree = true; // default to free, will be fixed if desired in TickComponent
+		CDP->GetMeshId(MeshIdString);
 	}
-}
 ```
 
-As shown above, cable data are recalculated using `CableStart` and `CableEnd`, which are recalculated and do not depend on last saved status.
+For spline mesh, deformation info is also encoded, see `USplineMeshComponent::GetMeshId`.
+
+**Collision is never cooked if an asset with the same DDC key is retrieved from the DDC**
+
+For example, if you changed the way collision mesh is generated by removing/adding vertices/faces, and such removal/addition is not encoded somehow in the DDC key, the newly cooked collision mesh might not shared with other teammates unless you manually cleaned the DDC.
+
+Another case is if your revision to the engine is not synced immediately to other teammates, old collision mesh generated by older version engine is still kept in the DDC and other teammates will not get newly cooked data from new engines.
+
+Rule of thumb: be aware of encoding change to assets in a DDC key. For debugging DDC related issue, unplug your network cable beforehand.
